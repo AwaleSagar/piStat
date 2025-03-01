@@ -11,8 +11,11 @@ pip3 install -r requirements.txt
 
 # Copy the Python script to home directory
 echo "Copying script to home directory..."
-cp pi_temp_service.py /home/pi/
-chmod +x /home/pi/pi_temp_service.py
+# Get the current user's home directory
+USER_HOME=$(eval echo ~$USER)
+echo "Detected home directory: $USER_HOME"
+cp pi_temp_service.py $USER_HOME/
+chmod +x $USER_HOME/pi_temp_service.py
 
 # Copy and enable the systemd service
 echo "Setting up systemd service..."
