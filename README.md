@@ -21,33 +21,24 @@ git clone https://github.com/yourusername/piStat.git
 cd piStat
 ```
 
-2. Install the required Python packages:
+2. Run the installation script:
 
 ```bash
+bash install.sh
+```
+
+Alternatively, you can manually install the service:
+
+```bash
+# Install dependencies
 pip3 install -r requirements.txt
-```
 
-3. Copy the service file to the systemd directory:
+# Copy the script to your home directory
+cp pi_temp_service.py ~/
+chmod +x ~/pi_temp_service.py
 
-```bash
+# Set up the service
 sudo cp pi-temp-service.service /etc/systemd/system/
-```
-
-4. Copy the Python script to your home directory:
-
-```bash
-cp pi_temp_service.py /home/pi/
-```
-
-5. Make the script executable:
-
-```bash
-chmod +x /home/pi/pi_temp_service.py
-```
-
-6. Enable and start the service:
-
-```bash
 sudo systemctl daemon-reload
 sudo systemctl enable pi-temp-service.service
 sudo systemctl start pi-temp-service.service
@@ -84,32 +75,30 @@ curl http://raspberry-pi-ip:8585/stats
 Example response:
 ```json
 {
-  "temperature": 42.8,
+  "cpu_temp": 42.8,
+  "cpu_freq": 1500.0,
   "cpu_usage": 23.5,
   "memory": {
-    "total": 3906.25,
-    "available": 2853.12,
-    "used": 1053.13,
+    "total": 8589934592,
+    "available": 6442450944,
+    "used": 2147483648,
     "percent": 27.0
   },
   "disk": {
-    "total": 29.72,
-    "used": 8.56,
-    "free": 21.16,
+    "total": 32212254720,
+    "used": 8053063680,
+    "free": 24159191040,
     "percent": 28.8
   },
-  "uptime": "3 days, 7:45:12",
-  "network": {
-    "bytes_sent": 1234567,
-    "bytes_recv": 7654321,
-    "packets_sent": 12345,
-    "packets_recv": 54321
-  },
+  "uptime": 86400.5,
+  "load_avg": [0.5, 0.7, 0.9],
   "timestamp": 1621234567.89
 }
 ```
 
-## Checking Service Status
+## Managing the Service
+
+### Checking Service Status
 
 To check if the service is running:
 
@@ -123,6 +112,48 @@ To view the logs:
 sudo journalctl -u pi-temp-service.service
 ```
 
+### Stopping the Service
+
+To temporarily stop the service:
+
+```bash
+sudo systemctl stop pi-temp-service.service
+```
+
+To prevent the service from starting at boot:
+
+```bash
+sudo systemctl disable pi-temp-service.service
+```
+
+### Restarting the Service
+
+To restart the service:
+
+```bash
+sudo systemctl restart pi-temp-service.service
+```
+
+### Uninstalling the Service
+
+To completely remove the service from your system:
+
+```bash
+# Stop and disable the service
+sudo systemctl stop pi-temp-service.service
+sudo systemctl disable pi-temp-service.service
+
+# Remove the service file
+sudo rm /etc/systemd/system/pi-temp-service.service
+
+# Reload systemd to recognize the changes
+sudo systemctl daemon-reload
+sudo systemctl reset-failed
+
+# Optionally, remove the Python script
+rm ~/pi_temp_service.py
+```
+
 ## Troubleshooting
 
 If the service fails to start, check the logs for errors:
@@ -132,6 +163,6 @@ sudo journalctl -u pi-temp-service.service -e
 ```
 
 Common issues:
-- Make sure Flask and psutil are installed (`pip3 install flask psutil`)
+- Make sure Flask and psutil are installed (`pip3 install flask psutil werkzeug==2.0.1`)
 - Ensure the script path in the service file is correct
 - Verify the script has execute permissions 
