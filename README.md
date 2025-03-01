@@ -1,16 +1,15 @@
-# Raspberry Pi Temperature API Service
+# Raspberry Pi System Monitor API
 
-A background service for Raspberry Pi 4 that provides an API to monitor system statistics.
+A background service for Raspberry Pi that provides an API to monitor system statistics in real-time.
 
 ## Features
 
 - Automatically starts on boot
 - Runs continuously in the background
 - Hosts an API on port 8585
-- Provides multiple monitoring endpoints:
-  - `/temp` - Get the current CPU temperature
-  - `/stats` - Get comprehensive system statistics (CPU, memory, disk, network, etc.)
-  - `/` - List available endpoints
+- Provides the following endpoints:
+  - `/stats` - Get comprehensive system statistics (CPU, memory, disk, etc.)
+  - `/` - Interactive API documentation and usage guide
 
 ## Installation
 
@@ -48,26 +47,13 @@ sudo systemctl start pi-temp-service.service
 
 Once the service is running, you can access the API endpoints:
 
-### List Available Endpoints
+### API Documentation
 ```bash
 curl http://raspberry-pi-ip:8585/
 ```
+Or simply open `http://raspberry-pi-ip:8585/` in a web browser to view the interactive documentation.
 
-### Get CPU Temperature
-```bash
-curl http://raspberry-pi-ip:8585/temp
-```
-
-Example response:
-```json
-{
-  "temperature": 42.8,
-  "unit": "Celsius",
-  "timestamp": 1621234567.89
-}
-```
-
-### Get Comprehensive System Statistics
+### Get System Statistics
 ```bash
 curl http://raspberry-pi-ip:8585/stats
 ```
@@ -75,25 +61,48 @@ curl http://raspberry-pi-ip:8585/stats
 Example response:
 ```json
 {
-  "cpu_temp": 42.8,
+  "cpu_temp": 45.8,
   "cpu_freq": 1500.0,
-  "cpu_usage": 23.5,
+  "cpu_usage": 12.5,
   "memory": {
     "total": 8589934592,
     "available": 6442450944,
     "used": 2147483648,
-    "percent": 27.0
+    "percent": 25.0
   },
   "disk": {
     "total": 32212254720,
     "used": 8053063680,
     "free": 24159191040,
-    "percent": 28.8
+    "percent": 25.0
   },
   "uptime": 86400.5,
   "load_avg": [0.5, 0.7, 0.9],
-  "timestamp": 1621234567.89
+  "timestamp": 1646092800.0
 }
+```
+
+### Response Fields Explained
+
+- `cpu_temp`: CPU temperature in Celsius
+- `cpu_freq`: CPU frequency in MHz
+- `cpu_usage`: CPU usage percentage
+- `memory`: Memory usage statistics in bytes
+- `disk`: Disk usage statistics in bytes
+- `uptime`: System uptime in seconds
+- `load_avg`: System load averages for 1, 5, and 15 minutes
+- `timestamp`: Unix timestamp when the data was collected
+
+## Testing the API
+
+The repository includes a test script that can verify the API is working correctly:
+
+```bash
+# Test on the local machine
+python3 test_api.py
+
+# Test on a remote Raspberry Pi
+python3 test_api.py -H 192.168.1.100 -p 8585
 ```
 
 ## Managing the Service
@@ -163,6 +172,7 @@ sudo journalctl -u pi-temp-service.service -e
 ```
 
 Common issues:
-- Make sure Flask and psutil are installed (`pip3 install flask psutil werkzeug==2.0.1`)
+- Make sure all dependencies are installed (`pip3 install flask psutil werkzeug==2.0.1 tabulate`)
 - Ensure the script path in the service file is correct
-- Verify the script has execute permissions 
+- Verify the script has execute permissions
+- Check if port 8585 is already in use by another application 
