@@ -3,12 +3,12 @@ Description=Raspberry Pi System Monitoring API Service
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/python3 /home/pi/pi_temp_service.py
-WorkingDirectory=/home/pi
+ExecStart=/usr/bin/python3 %h/pi_temp_service.py
+WorkingDirectory=%h
 StandardOutput=journal
 StandardError=journal
 Restart=always
-User=pi
+User=%u
 
 [Install]
 WantedBy=multi-user.target 
