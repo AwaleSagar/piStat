@@ -116,7 +116,7 @@ print(f"CPU Usage: {data['cpu_usage']}%")
         <li>Timestamp is Unix time (seconds since epoch)</li>
     </ul>
     
-    <p>For more information, visit the <a href="https://github.com/yourusername/piStat">GitHub repository</a>.</p>
+    <p>For more information, visit the <a href="https://github.com/AwaleSagar/piStat">GitHub repository</a>.</p>
 </body>
 </html>
 """
@@ -185,4 +185,4 @@ def get_stats():
 
 # Run the Flask app
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8585)
+    app.run(host='0.0.0.0', port=8585) 

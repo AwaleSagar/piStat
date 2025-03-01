@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""
+Raspberry Pi System Monitor API Test Script
+
+This script tests the Raspberry Pi System Monitor API by connecting to the
+specified host and port and verifying that all endpoints are working correctly.
+"""
 
 import requests
 import json
@@ -10,7 +16,7 @@ from tabulate import tabulate
 from datetime import datetime
 
 def get_local_ip():
-    """Get the local IP address of the Raspberry Pi"""
+    """Get the local IP address of the device"""
     try:
         # Create a socket connection to determine the local IP
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -73,12 +79,12 @@ def test_stats_endpoint(host, port):
     print("Testing stats endpoint (/stats)...")
     return test_api_endpoint("/stats", host, port, expect_json=True)
 
-def test_all_endpoints(host, port):
+def test_all_endpoints(host, port, table_format):
     """Test all available API endpoints"""
     results = []
     all_passed = True
     
-    print(f"Testing API at {host}:{port}...\n")
+    print(f"Testing Raspberry Pi System Monitor API at {host}:{port}...\n")
     
     # Test root endpoint
     print(f"{'=' * 50}")
@@ -108,7 +114,7 @@ def test_all_endpoints(host, port):
         status_str = "✓ SUCCESS" if success else "✗ FAILED"
         table_data.append([endpoint, description, status_str, status, response_time])
     
-    print(tabulate(table_data, headers=headers, tablefmt="grid"))
+    print(tabulate(table_data, headers=headers, tablefmt=table_format))
     print(f"\nTest completed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"Target: {host}:{port}")
     print(f"Overall result: {'PASSED' if all_passed else 'FAILED'}")
@@ -117,19 +123,22 @@ def test_all_endpoints(host, port):
 
 def parse_arguments():
     """Parse command line arguments"""
-    parser = argparse.ArgumentParser(description='Test the Raspberry Pi System Monitoring API')
+    parser = argparse.ArgumentParser(
+        description='Test the Raspberry Pi System Monitor API',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
     
     parser.add_argument('-H', '--host', 
                         help='Host address of the API (default: auto-detect local IP)',
                         default=None)
     
     parser.add_argument('-p', '--port', 
-                        help='Port number of the API (default: 8585)',
+                        help='Port number of the API',
                         type=int,
                         default=8585)
     
     parser.add_argument('-f', '--format',
-                        help='Table format for results (default: grid)',
+                        help='Table format for results',
                         choices=['plain', 'simple', 'github', 'grid', 'fancy_grid', 'pipe', 'orgtbl', 'jira'],
                         default='grid')
     
@@ -145,7 +154,7 @@ if __name__ == "__main__":
     print(f"Target API: {host}:{port}")
     
     # Run the tests
-    success = test_all_endpoints(host, port)
+    success = test_all_endpoints(host, port, args.format)
     
     # Exit with appropriate status code
     sys.exit(0 if success else 1) 

@@ -33,8 +33,8 @@ Alternatively, you can manually install the service:
 pip3 install -r requirements.txt
 
 # Copy the script to your home directory
-cp pi_temp_service.py ~/
-chmod +x ~/pi_temp_service.py
+cp pi_system_monitor.py ~/
+chmod +x ~/pi_system_monitor.py
 
 # Set up the service
 sudo cp pi-temp-service.service /etc/systemd/system/
@@ -103,6 +103,9 @@ python3 test_api.py
 
 # Test on a remote Raspberry Pi
 python3 test_api.py -H 192.168.1.100 -p 8585
+
+# Use a different table format for results
+python3 test_api.py --format fancy_grid
 ```
 
 ## Managing the Service
@@ -160,7 +163,7 @@ sudo systemctl daemon-reload
 sudo systemctl reset-failed
 
 # Optionally, remove the Python script
-rm ~/pi_temp_service.py
+rm ~/pi_system_monitor.py
 ```
 
 ## Troubleshooting
