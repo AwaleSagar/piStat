@@ -1,0 +1,27 @@
+[Unit]
+Description=Raspberry Pi System Monitor API Service
+Documentation=https://github.com/AwaleSagar/piStat
+After=network.target
+Wants=network-online.target
+
+[Service]
+# ExecStart will be customized by install.sh with the user's Python path
+ExecStart=/usr/bin/python3 %h/pi_system_monitor.py
+WorkingDirectory=%h
+StandardOutput=journal
+StandardError=journal
+Restart=always
+RestartSec=10
+Type=simple
+User=%u
+
+# Environment variables for configuration
+# These can be customized in ~/.env or uncommented here
+Environment="PYTHONUNBUFFERED=1"
+#Environment="PISTAT_PORT=8585"
+#Environment="PISTAT_HOST=0.0.0.0"
+#Environment="PISTAT_CACHE_SECONDS=2"
+#Environment="PISTAT_DEBUG=False"
+
+[Install]
+WantedBy=multi-user.target 
