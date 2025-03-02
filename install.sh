@@ -27,13 +27,38 @@ if [ -z "$PYTHON_PATH" ]; then
     echo "Using default Python path: $PYTHON_PATH"
 fi
 
-# Handle paths with spaces by using double quotes
+# Handle paths with spaces and trailing slashes
 PYTHON_PATH=$(echo "$PYTHON_PATH" | sed 's/^[ \t]*//;s/[ \t]*$//')
+# Remove trailing slash if present
+PYTHON_PATH="${PYTHON_PATH%/}"
+
+# If the path is a directory, look for python3 executable within it
+if [ -d "$PYTHON_PATH" ]; then
+    echo "Detected directory path: $PYTHON_PATH"
+    if [ -x "$PYTHON_PATH/python3" ]; then
+        echo "Found python3 in directory: $PYTHON_PATH/python3"
+        PYTHON_PATH="$PYTHON_PATH/python3"
+    elif [ -x "$PYTHON_PATH/python" ]; then
+        echo "Found python in directory: $PYTHON_PATH/python"
+        PYTHON_PATH="$PYTHON_PATH/python"
+    else
+        echo -e "${RED}Error: No Python executable found in $PYTHON_PATH${NC}"
+        echo -e "${YELLOW}Checking if Python 3 is available at the default location...${NC}"
+        if [ -x "$DEFAULT_PYTHON_PATH" ]; then
+            echo "Found Python at default location, using: $DEFAULT_PYTHON_PATH"
+            PYTHON_PATH="$DEFAULT_PYTHON_PATH"
+        else
+            echo -e "${RED}Python 3 was not found at the default location either.${NC}"
+            echo -e "${RED}Please install Python 3 or provide a valid path to your Python interpreter.${NC}"
+            exit 1
+        fi
+    fi
+fi
 
 # Validate that the Python path exists and can run
 echo "Validating Python path: $PYTHON_PATH"
-if ! command -v "$PYTHON_PATH" &> /dev/null && [ ! -f "$PYTHON_PATH" ]; then
-    echo -e "${RED}Error: $PYTHON_PATH is not found in PATH or as a file.${NC}"
+if [ ! -x "$PYTHON_PATH" ] && ! command -v "$PYTHON_PATH" &> /dev/null; then
+    echo -e "${RED}Error: $PYTHON_PATH is not executable or not found in PATH.${NC}"
     echo -e "${YELLOW}Checking if Python 3 is available at the default location...${NC}"
     
     if [ -x "$DEFAULT_PYTHON_PATH" ]; then
@@ -54,8 +79,11 @@ if ! PYTHON_VERSION=$("$PYTHON_PATH" -c "import sys; print(sys.version)" 2>&1); 
     exit 1
 fi
 
-if ! echo "$PYTHON_VERSION" | grep -q "Python 3"; then
-    echo -e "${RED}Error: $PYTHON_PATH does not appear to be Python 3.${NC}"
+# Get major version directly from Python
+PYTHON_MAJOR_VERSION=$("$PYTHON_PATH" -c "import sys; print(sys.version_info.major)" 2>/dev/null)
+
+if [ "$PYTHON_MAJOR_VERSION" != "3" ]; then
+    echo -e "${RED}Error: $PYTHON_PATH is not Python 3.${NC}"
     echo -e "${RED}Found version info: ${NC}"
     echo "$PYTHON_VERSION"
     echo -e "${RED}Please provide a valid path to Python 3.${NC}"
@@ -68,9 +96,16 @@ echo -e "${GREEN}Version: $(echo "$PYTHON_VERSION" | head -n 1)${NC}"
 # Check for pip availability
 echo "Checking pip installation..."
 if ! "$PYTHON_PATH" -c "import pip" &> /dev/null; then
-    echo -e "${RED}Error: pip is not available for this Python installation.${NC}"
-    echo -e "${RED}Please install pip or use a Python installation that includes pip.${NC}"
-    exit 1
+    echo -e "${YELLOW}Warning: pip is not available for this Python installation.${NC}"
+    echo -e "${YELLOW}Attempting to install pip...${NC}"
+    
+    # Try to install pip if it's not available
+    if ! "$PYTHON_PATH" -m ensurepip --default-pip; then
+        echo -e "${RED}Failed to install pip. Please install pip manually or use a Python installation that includes pip.${NC}"
+        exit 1
+    else
+        echo -e "${GREEN}Pip installed successfully!${NC}"
+    fi
 fi
 
 # Install dependencies
