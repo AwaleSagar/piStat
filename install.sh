@@ -27,9 +27,13 @@ if [ -z "$PYTHON_PATH" ]; then
     echo "Using default Python path: $PYTHON_PATH"
 fi
 
-# Validate that the Python path exists and is executable
-if [ ! -x "$PYTHON_PATH" ]; then
-    echo -e "${RED}Error: $PYTHON_PATH is not executable or does not exist.${NC}"
+# Handle paths with spaces by using double quotes
+PYTHON_PATH=$(echo "$PYTHON_PATH" | sed 's/^[ \t]*//;s/[ \t]*$//')
+
+# Validate that the Python path exists and can run
+echo "Validating Python path: $PYTHON_PATH"
+if ! command -v "$PYTHON_PATH" &> /dev/null && [ ! -f "$PYTHON_PATH" ]; then
+    echo -e "${RED}Error: $PYTHON_PATH is not found in PATH or as a file.${NC}"
     echo -e "${YELLOW}Checking if Python 3 is available at the default location...${NC}"
     
     if [ -x "$DEFAULT_PYTHON_PATH" ]; then
@@ -42,20 +46,39 @@ if [ ! -x "$PYTHON_PATH" ]; then
     fi
 fi
 
-# Verify it's Python 3
-PYTHON_VERSION=$($PYTHON_PATH --version 2>&1)
-if [[ $PYTHON_VERSION != *"Python 3"* ]]; then
-    echo -e "${RED}Error: $PYTHON_PATH is not Python 3.${NC}"
-    echo -e "${RED}Found: $PYTHON_VERSION${NC}"
+# Check if it's Python 3 using a safer method
+echo "Checking Python version..."
+PYTHON_VERSION=""
+if ! PYTHON_VERSION=$("$PYTHON_PATH" -c "import sys; print(sys.version)" 2>&1); then
+    echo -e "${RED}Error executing $PYTHON_PATH. Please ensure it's a valid Python interpreter.${NC}"
+    exit 1
+fi
+
+if ! echo "$PYTHON_VERSION" | grep -q "Python 3"; then
+    echo -e "${RED}Error: $PYTHON_PATH does not appear to be Python 3.${NC}"
+    echo -e "${RED}Found version info: ${NC}"
+    echo "$PYTHON_VERSION"
     echo -e "${RED}Please provide a valid path to Python 3.${NC}"
     exit 1
 fi
 
-echo -e "${GREEN}Using Python: $PYTHON_PATH ($PYTHON_VERSION)${NC}"
+echo -e "${GREEN}Using Python: $PYTHON_PATH${NC}"
+echo -e "${GREEN}Version: $(echo "$PYTHON_VERSION" | head -n 1)${NC}"
+
+# Check for pip availability
+echo "Checking pip installation..."
+if ! "$PYTHON_PATH" -c "import pip" &> /dev/null; then
+    echo -e "${RED}Error: pip is not available for this Python installation.${NC}"
+    echo -e "${RED}Please install pip or use a Python installation that includes pip.${NC}"
+    exit 1
+fi
 
 # Install dependencies
 echo "Installing dependencies..."
-$PYTHON_PATH -m pip install -r requirements.txt --force-reinstall || { echo -e "${RED}Failed to install dependencies. Check your internet connection and pip installation.${NC}"; exit 1; }
+if ! "$PYTHON_PATH" -m pip install -r requirements.txt --force-reinstall; then
+    echo -e "${RED}Failed to install dependencies. Check your internet connection and pip installation.${NC}"
+    exit 1
+fi
 
 # Create a backup directory for any existing files
 BACKUP_DIR="$HOME/pistat_backup_$(date +%Y%m%d_%H%M%S)"
@@ -90,9 +113,14 @@ chmod +x "$USER_HOME/pi_system_monitor.py"
 echo "Configuring service file..."
 CURRENT_USER=$(whoami)
 cp pi-stat.service pi-stat.service.tmp
+
+# Use safer sed commands for path replacements
 sed -i "s/%u/$CURRENT_USER/g" pi-stat.service.tmp
 sed -i "s|%h|$USER_HOME|g" pi-stat.service.tmp
-sed -i "s|/usr/bin/python3|$PYTHON_PATH|g" pi-stat.service.tmp
+
+# Escape the Python path for sed
+ESCAPED_PYTHON_PATH=$(echo "$PYTHON_PATH" | sed 's/[\/&]/\\&/g')
+sed -i "s|/usr/bin/python3|$ESCAPED_PYTHON_PATH|g" pi-stat.service.tmp
 
 # Backup existing service files if they exist
 echo "Checking for existing service files..."
