@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, render_template_string, request
+from flask import Flask, jsonify, render_template_string, request, make_response
 import psutil
 import time
 import subprocess
@@ -10,8 +10,11 @@ import platform
 import sys
 from functools import lru_cache
 from dotenv import load_dotenv
-from collections import defaultdict
+from collections import defaultdict, deque
 import threading
+import gzip
+from typing import Dict, List, Union, Tuple, Optional, Any, Callable
+from datetime import datetime
 
 # Load environment variables from .env file if it exists
 load_dotenv()
@@ -38,61 +41,128 @@ if PLATFORM_SYSTEM == "Linux":
 
 logger.info(f"Platform detected: {PLATFORM_SYSTEM}, Is Raspberry Pi: {IS_RASPBERRY_PI}")
 
-# Configuration management
-# Get configuration from environment variables with defaults
-PORT = int(os.environ.get('PISTAT_PORT', 8585))
+# Improved configuration management with validation
+def get_env_int(name: str, default: int, min_val: int = None, max_val: int = None) -> int:
+    """Get integer environment variable with validation."""
+    try:
+        value = int(os.environ.get(name, default))
+        if min_val is not None and value < min_val:
+            logger.warning(f"{name} value {value} below minimum {min_val}, using minimum")
+            return min_val
+        if max_val is not None and value > max_val:
+            logger.warning(f"{name} value {value} above maximum {max_val}, using maximum")
+            return max_val
+        return value
+    except ValueError:
+        logger.warning(f"Invalid {name} value, using default: {default}")
+        return default
+
+def get_env_bool(name: str, default: bool) -> bool:
+    """Get boolean environment variable."""
+    val = os.environ.get(name, str(default)).lower()
+    return val in ('true', 't', '1', 'yes', 'y')
+
+# Configuration with validation
+PORT = get_env_int('PISTAT_PORT', 8585, 1, 65535)
 HOST = os.environ.get('PISTAT_HOST', '0.0.0.0')
-CACHE_SECONDS = int(os.environ.get('PISTAT_CACHE_SECONDS', 2))
-DEBUG_MODE = os.environ.get('PISTAT_DEBUG', 'False').lower() == 'true'
+CACHE_SECONDS = get_env_int('PISTAT_CACHE_SECONDS', 2, 0, 3600)
+DEBUG_MODE = get_env_bool('PISTAT_DEBUG', False)
 LOG_LEVEL = os.environ.get('PISTAT_LOG_LEVEL', 'INFO').upper()
 # Rate limiting configuration
-RATE_LIMIT_ENABLED = os.environ.get('PISTAT_RATE_LIMIT_ENABLED', 'True').lower() == 'true'
-RATE_LIMIT_REQUESTS = int(os.environ.get('PISTAT_RATE_LIMIT_REQUESTS', 60))  # Requests per minute
-RATE_LIMIT_WINDOW = int(os.environ.get('PISTAT_RATE_LIMIT_WINDOW', 60))  # Window in seconds
+RATE_LIMIT_ENABLED = get_env_bool('PISTAT_RATE_LIMIT_ENABLED', True)
+RATE_LIMIT_REQUESTS = get_env_int('PISTAT_RATE_LIMIT_REQUESTS', 60, 1, 1000)
+RATE_LIMIT_WINDOW = get_env_int('PISTAT_RATE_LIMIT_WINDOW', 60, 1, 3600)
+# Compression
+ENABLE_COMPRESSION = get_env_bool('PISTAT_COMPRESSION', True)
+# Response size limit (in bytes)
+MIN_SIZE_TO_COMPRESS = get_env_int('PISTAT_MIN_COMPRESS_SIZE', 500, 0, 10000)
 
 # Update log level from configuration
 if hasattr(logging, LOG_LEVEL):
     logger.setLevel(getattr(logging, LOG_LEVEL))
+else:
+    logger.warning(f"Invalid log level: {LOG_LEVEL}, using INFO")
+    logger.setLevel(logging.INFO)
 
 # Initialize Flask app
 app = Flask(__name__)
 
-# Rate limiting implementation
-request_counters = defaultdict(int)
-request_timestamps = defaultdict(list)
-rate_limit_lock = threading.Lock()
-
-def is_rate_limited(ip_address):
-    """Check if the IP address has exceeded the rate limit"""
-    if not RATE_LIMIT_ENABLED:
-        return False
-        
-    with rate_limit_lock:
-        current_time = time.time()
-        
-        # Clean up old timestamps
-        request_timestamps[ip_address] = [ts for ts in request_timestamps[ip_address] 
-                                        if current_time - ts < RATE_LIMIT_WINDOW]
-        
-        # Check if rate limit is exceeded
-        if len(request_timestamps[ip_address]) >= RATE_LIMIT_REQUESTS:
-            return True
+# Improved rate limiting implementation using sliding window with deque
+class RateLimiter:
+    def __init__(self, window_size: int, max_requests: int):
+        self.window_size = window_size
+        self.max_requests = max_requests
+        self.clients: Dict[str, deque] = defaultdict(lambda: deque(maxlen=max_requests))
+        self.lock = threading.Lock()
+    
+    def is_rate_limited(self, client_id: str) -> bool:
+        """Check if the client has exceeded the rate limit using sliding window"""
+        if not RATE_LIMIT_ENABLED:
+            return False
             
-        # Record this request
-        request_timestamps[ip_address].append(current_time)
-        return False
+        with self.lock:
+            now = time.time()
+            client_history = self.clients[client_id]
+            
+            # Remove requests older than the window
+            while client_history and now - client_history[0] > self.window_size:
+                client_history.popleft()
+            
+            # Check if rate limit is exceeded
+            if len(client_history) >= self.max_requests:
+                return True
+                
+            # Record this request
+            client_history.append(now)
+            return False
 
+# Create a rate limiter instance
+rate_limiter = RateLimiter(RATE_LIMIT_WINDOW, RATE_LIMIT_REQUESTS)
+
+# Custom request logging middleware
 @app.before_request
-def limit_request_rate():
-    """Apply rate limiting to all requests"""
+def before_request():
+    """Log request info and apply rate limiting"""
+    # Apply rate limiting
     ip_address = request.remote_addr
     
-    if is_rate_limited(ip_address):
-        logger.warning(f"Rate limit exceeded for IP: {ip_address}")
+    if rate_limiter.is_rate_limited(ip_address):
+        logger.warning(f"Rate limit exceeded for IP: {ip_address}, endpoint: {request.path}")
         return jsonify({
             'error': 'Rate limit exceeded',
             'message': f'Maximum {RATE_LIMIT_REQUESTS} requests per {RATE_LIMIT_WINDOW} seconds'
         }), 429  # 429 Too Many Requests
+    
+    # Log request details in debug mode
+    if DEBUG_MODE:
+        logger.debug(f"Request from {ip_address}: {request.method} {request.path}")
+
+# Response compression and additional headers
+@app.after_request
+def after_request(response):
+    """Add security headers and compress response if needed"""
+    # Add security headers
+    response.headers.add('X-Content-Type-Options', 'nosniff')
+    response.headers.add('X-Frame-Options', 'DENY')
+    response.headers.add('X-XSS-Protection', '1; mode=block')
+    response.headers.add('Cache-Control', f'public, max-age={CACHE_SECONDS}')
+    
+    # Add response timestamp
+    response.headers.add('X-Response-Time', datetime.utcnow().isoformat())
+    
+    # Apply compression if enabled and response is large enough
+    if (ENABLE_COMPRESSION and 
+        response.status_code == 200 and
+        not response.direct_passthrough and
+        (response.content_length is None or response.content_length > MIN_SIZE_TO_COMPRESS) and
+        'gzip' in request.headers.get('Accept-Encoding', '')):
+        
+        compressed_data = gzip.compress(response.data)
+        response.data = compressed_data
+        response.headers['Content-Encoding'] = 'gzip'
+        response.headers['Content-Length'] = len(compressed_data)
+    
+    return response
 
 # HTML template for the root page
 HTML_TEMPLATE = """
@@ -480,29 +550,88 @@ for proc in processes:
 </html>
 """
 
-# Global cache variables
-last_stats = None
-last_stats_time = 0
+# Improved caching mechanism
+class StatCache:
+    def __init__(self, ttl_seconds: int):
+        self.cache = {}
+        self.ttl = ttl_seconds
+        self.lock = threading.Lock()
+    
+    def get(self, key: str, fields: List[str] = None):
+        """Get cached data, optionally filtered by fields"""
+        with self.lock:
+            if key not in self.cache:
+                return None
+                
+            data, timestamp = self.cache[key]
+            
+            if time.time() - timestamp > self.ttl:
+                return None
+                
+            if fields:
+                filtered_data = {}
+                for field in fields:
+                    field = field.strip()
+                    if field in data:
+                        filtered_data[field] = data[field]
+                return filtered_data
+            
+            return data
+    
+    def set(self, key: str, data: Dict):
+        """Store data in cache with current timestamp"""
+        with self.lock:
+            self.cache[key] = (data, time.time())
+            
+    def clear(self):
+        """Clear all cached data"""
+        with self.lock:
+            self.cache.clear()
 
-def run_command(command, args=None):
+# Initialize cache with configured TTL
+stats_cache = StatCache(CACHE_SECONDS)
+
+def run_command(command: Union[str, List[str]], args: List[str] = None, 
+                timeout: int = 5) -> Optional[str]:
     """
-    Execute a shell command and return its output.
+    Execute a shell command and return its output with timeout.
     
     Args:
-        command (str): The command to execute
-        args (list, optional): List of arguments for the command
+        command: The command to execute (string or list)
+        args: List of arguments for the command
+        timeout: Maximum execution time in seconds
     
     Returns:
-        str: Command output or None if execution failed
+        Command output or None if execution failed
     """
     try:
-        if args:
+        if isinstance(command, list) or args:
+            cmd = command if isinstance(command, list) else [command]
+            if args:
+                cmd.extend(args)
             # Safer execution without shell=True
-            result = subprocess.run([command] + args, shell=False, check=True, text=True, capture_output=True)
+            result = subprocess.run(
+                cmd, 
+                shell=False, 
+                check=True, 
+                text=True, 
+                capture_output=True,
+                timeout=timeout
+            )
         else:
             # Some commands might still need shell=True, but we're careful about inputs
-            result = subprocess.run(command, shell=True, check=True, text=True, capture_output=True)
+            result = subprocess.run(
+                command, 
+                shell=True, 
+                check=True, 
+                text=True, 
+                capture_output=True,
+                timeout=timeout
+            )
         return result.stdout.strip()
+    except subprocess.TimeoutExpired:
+        logger.warning(f"Command timed out after {timeout}s: {command} {args if args else ''}")
+        return None
     except subprocess.CalledProcessError as e:
         logger.warning(f"Command failed: {command} {args if args else ''}, return code: {e.returncode}")
         return None
@@ -512,7 +641,7 @@ def run_command(command, args=None):
 
 # Apply LRU cache to expensive operations that don't change often
 @lru_cache(maxsize=32, typed=True)
-def get_hardware_info_cached():
+def get_hardware_info_cached() -> Dict:
     """
     Cached version of hardware info - doesn't change during runtime
     """
@@ -797,15 +926,23 @@ def health_check():
     """
     try:
         uptime = time.time() - psutil.boot_time()
-        return jsonify({
+        memory = psutil.virtual_memory()
+        
+        health_data = {
             'status': 'healthy',
-            'uptime': uptime
-        })
+            'uptime': uptime,
+            'memory_usage': memory.percent,
+            'timestamp': time.time(),
+            'version': '1.0.0'  # Add version info
+        }
+        
+        return jsonify(health_data)
     except Exception as e:
         logger.error(f"Health check failed: {str(e)}")
         return jsonify({
             'status': 'unhealthy',
-            'error': str(e)
+            'error': str(e),
+            'timestamp': time.time()
         }), 500
 
 @app.route('/stats', methods=['GET'])
@@ -822,27 +959,21 @@ def get_stats():
     Returns:
         JSON: System statistics
     """
-    global last_stats, last_stats_time
-    
     # Parse query parameters
     block = request.args.get('block', 'false').lower() == 'true'
     use_cache = request.args.get('cache', 'true').lower() == 'true'
     fields = request.args.get('fields')
     fields_list = fields.split(',') if fields else None
     
-    current_time = time.time()
-    
-    # Return cached stats if they're recent enough and caching is enabled
-    if use_cache and last_stats and current_time - last_stats_time < CACHE_SECONDS:
-        # Filter by requested fields if specified
-        if fields_list:
-            filtered_stats = {}
-            for field in fields_list:
-                field = field.strip()
-                if field in last_stats:
-                    filtered_stats[field] = last_stats[field]
-            return jsonify(filtered_stats)
-        return jsonify(last_stats)
+    # Check cache first
+    if use_cache and fields_list:
+        cached_stats = stats_cache.get('system_stats', fields_list)
+        if cached_stats:
+            return jsonify(cached_stats)
+    elif use_cache:
+        cached_stats = stats_cache.get('system_stats')
+        if cached_stats:
+            return jsonify(cached_stats)
     
     try:
         stats = {}
@@ -855,7 +986,7 @@ def get_stats():
                 cpu_temp = temps['cpu_thermal'][0].current  # Temperature in Celsius
             stats['cpu_temp'] = cpu_temp
         except Exception as e:
-            logger.warning(f"Failed to get CPU temperature: {str(e)}")
+            logger.debug(f"Failed to get CPU temperature: {str(e)}")
             stats['cpu_temp'] = None
 
         # Get CPU frequency (in MHz)
@@ -864,7 +995,7 @@ def get_stats():
             cpu_freq = cpu_freq_info.current if cpu_freq_info else None
             stats['cpu_freq'] = cpu_freq
         except Exception as e:
-            logger.warning(f"Failed to get CPU frequency: {str(e)}")
+            logger.debug(f"Failed to get CPU frequency: {str(e)}")
             stats['cpu_freq'] = None
 
         # Get CPU usage percentage
@@ -890,43 +1021,15 @@ def get_stats():
             logger.warning(f"Failed to get memory info: {str(e)}")
             stats['memory'] = {}
 
-        # Get swap info
+        # Add other metrics
         stats['swap'] = get_swap_info()
-
-        # Get disk usage for the root filesystem
-        try:
-            disk = psutil.disk_usage('/')
-            stats['disk'] = {
-                'total': disk.total,        # Total disk space in bytes
-                'used': disk.used,          # Used disk space in bytes
-                'free': disk.free,          # Free disk space in bytes
-                'percent': disk.percent     # Percentage used
-            }
-        except Exception as e:
-            logger.warning(f"Failed to get disk usage: {str(e)}")
-            stats['disk'] = {}
-
-        # Get disk I/O
+        stats['disk'] = get_disk_usage()
         stats['disk_io'] = get_disk_io()
-
-        # Get system uptime (in seconds)
-        try:
-            stats['uptime'] = time.time() - psutil.boot_time()
-        except Exception as e:
-            logger.warning(f"Failed to get uptime: {str(e)}")
-            stats['uptime'] = None
-
-        # Get load averages (1, 5, 15 minutes)
-        try:
-            stats['load_avg'] = list(psutil.getloadavg())
-        except Exception as e:
-            logger.warning(f"Failed to get load averages: {str(e)}")
-            stats['load_avg'] = []
-
-        # Add timestamp
-        stats['timestamp'] = current_time  # Time of data collection
+        stats['uptime'] = get_system_uptime()
+        stats['load_avg'] = get_load_averages()
+        stats['timestamp'] = time.time()
         
-        # Add additional metrics
+        # Add additional metrics that might be expensive - consider making them optional
         stats['gpu'] = get_gpu_info()
         stats['power'] = get_power_info()
         stats['clocks'] = get_clock_info()
@@ -934,8 +1037,7 @@ def get_stats():
         stats['hardware'] = get_hardware_info_cached()
 
         # Update cache
-        last_stats = stats
-        last_stats_time = current_time
+        stats_cache.set('system_stats', stats)
         
         # Filter by requested fields if specified
         if fields_list:
@@ -953,8 +1055,40 @@ def get_stats():
         logger.error(f"Error collecting system stats: {str(e)}")
         return jsonify({
             'error': 'Failed to collect system statistics',
-            'details': str(e)
+            'details': str(e),
+            'timestamp': time.time()
         }), 500
+
+# Helper functions to modularize the stats collection
+def get_disk_usage() -> Dict:
+    """Get disk usage for the root filesystem"""
+    try:
+        disk = psutil.disk_usage('/')
+        return {
+            'total': disk.total,
+            'used': disk.used,
+            'free': disk.free,
+            'percent': disk.percent
+        }
+    except Exception as e:
+        logger.warning(f"Failed to get disk usage: {str(e)}")
+        return {}
+
+def get_system_uptime() -> float:
+    """Get system uptime in seconds"""
+    try:
+        return time.time() - psutil.boot_time()
+    except Exception as e:
+        logger.warning(f"Failed to get uptime: {str(e)}")
+        return 0
+
+def get_load_averages() -> List[float]:
+    """Get system load averages"""
+    try:
+        return list(psutil.getloadavg())
+    except Exception as e:
+        logger.warning(f"Failed to get load averages: {str(e)}")
+        return []
 
 @app.route('/processes', methods=['GET'])
 def get_processes():
@@ -1089,7 +1223,80 @@ def get_storage_devices():
             'details': str(e)
         }), 500
 
+# Add a new endpoint for system metrics over time
+@app.route('/metrics/history', methods=['GET'])
+def get_metric_history():
+    """
+    Endpoint to retrieve historical metrics.
+    
+    Query Parameters:
+        metric (str): The metric to return history for (cpu, memory, temp)
+        duration (int): Duration in minutes to look back (default: 10)
+        
+    Returns:
+        JSON: Historical metric data
+    """
+    # This would require a proper time-series storage implementation
+    # For now, return a placeholder
+    return jsonify({
+        'message': 'Historical metrics not implemented yet. Consider using a time-series database.',
+        'timestamp': time.time()
+    })
+
+# Add a system config endpoint
+@app.route('/system/config', methods=['GET'])
+def get_system_config():
+    """
+    Endpoint to retrieve system configuration information.
+    
+    Returns:
+        JSON: System configuration details
+    """
+    try:
+        config_info = {
+            'platform': PLATFORM_SYSTEM,
+            'is_raspberry_pi': IS_RASPBERRY_PI,
+            'hostname': platform.node(),
+            'python_version': platform.python_version(),
+            'server': {
+                'port': PORT,
+                'host': HOST,
+                'debug_mode': DEBUG_MODE,
+                'cache_seconds': CACHE_SECONDS,
+                'rate_limiting': {
+                    'enabled': RATE_LIMIT_ENABLED,
+                    'requests': RATE_LIMIT_REQUESTS,
+                    'window': RATE_LIMIT_WINDOW
+                },
+                'compression': {
+                    'enabled': ENABLE_COMPRESSION,
+                    'min_size': MIN_SIZE_TO_COMPRESS
+                }
+            },
+            'timestamp': time.time()
+        }
+        return jsonify(config_info)
+    except Exception as e:
+        logger.error(f"Error getting system config: {str(e)}")
+        return jsonify({
+            'error': 'Failed to get system configuration',
+            'details': str(e)
+        }), 500
+
+# Graceful shutdown handler
+def graceful_shutdown(signal_number, frame):
+    """Handle graceful shutdown on SIGTERM/SIGINT"""
+    logger.info(f"Received signal {signal_number}, shutting down...")
+    # Clean up resources
+    stats_cache.clear()
+    sys.exit(0)
+
 # Run the Flask app
 if __name__ == '__main__':
+    # Register signal handlers for graceful shutdown
+    import signal
+    signal.signal(signal.SIGTERM, graceful_shutdown)
+    signal.signal(signal.SIGINT, graceful_shutdown)
+    
     logger.info(f"Starting Pi System Monitor on {HOST}:{PORT}")
     app.run(host=HOST, port=PORT, debug=DEBUG_MODE)
