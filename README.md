@@ -1,6 +1,6 @@
 # Raspberry Pi System Monitor API
 
-A background service for Raspberry Pi that provides a comprehensive API to monitor system statistics in real-time.
+A background service that provides a comprehensive API to monitor system statistics in real-time. While optimized for Raspberry Pi, it now includes cross-platform support.
 
 ## Features
 
@@ -9,10 +9,17 @@ A background service for Raspberry Pi that provides a comprehensive API to monit
 - Hosts an API on port 8585 (configurable)
 - Provides the following endpoints:
   - `/stats` - Get comprehensive system statistics
+  - `/processes` - List running processes with resource usage
+  - `/network/interfaces` - Network interface details
+  - `/storage/devices` - Storage device information
   - `/health` - Simple health check endpoint
   - `/` - Interactive API documentation and usage guide
-- Supports caching for improved performance
-- Configurable via environment variables
+- Cross-platform support (optimized for Raspberry Pi)
+- Robust error handling and graceful degradation
+- Smart caching for improved performance
+- Field filtering capability for optimized responses
+- Rate limiting for API protection
+- Configurable via environment variables or `.env` file
 
 ## System Metrics
 
@@ -29,7 +36,7 @@ The API provides detailed metrics including:
 
 ## Installation
 
-1. Clone this repository or copy the files to your Raspberry Pi:
+1. Clone this repository or copy the files to your device:
 
 ```bash
 git clone https://github.com/yourusername/piStat.git
@@ -42,7 +49,7 @@ cd piStat
 pip3 install -r requirements.txt
 ```
 
-3. Set up the service:
+3. Set up the service (Linux/Raspberry Pi):
 
 ```bash
 # Copy the script to your home directory
@@ -58,7 +65,7 @@ sudo systemctl start pi-stat.service
 
 ## Configuration
 
-The application can be configured using environment variables:
+The application can be configured using environment variables or a `.env` file:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
@@ -66,8 +73,12 @@ The application can be configured using environment variables:
 | PISTAT_HOST | Host address to bind to | 0.0.0.0 |
 | PISTAT_CACHE_SECONDS | Cache duration in seconds | 2 |
 | PISTAT_DEBUG | Enable debug mode | False |
+| PISTAT_LOG_LEVEL | Logging level (INFO, DEBUG, etc) | INFO |
+| PISTAT_RATE_LIMIT_ENABLED | Enable rate limiting | True |
+| PISTAT_RATE_LIMIT_REQUESTS | Request limit per window | 60 |
+| PISTAT_RATE_LIMIT_WINDOW | Rate limit window in seconds | 60 |
 
-You can set these variables in your environment or create a `.env` file.
+You can set these variables in your environment or create a `.env` file in the same directory as the script.
 
 ## Usage
 
@@ -75,13 +86,13 @@ Once the service is running, you can access the API endpoints:
 
 ### API Documentation
 ```bash
-curl http://raspberry-pi-ip:8585/
+curl http://device-ip:8585/
 ```
-Or simply open `http://raspberry-pi-ip:8585/` in a web browser to view the interactive documentation.
+Or simply open `http://device-ip:8585/` in a web browser to view the interactive documentation.
 
 ### Health Check
 ```bash
-curl http://raspberry-pi-ip:8585/health
+curl http://device-ip:8585/health
 ```
 
 Example response:
@@ -94,12 +105,13 @@ Example response:
 
 ### Get System Statistics
 ```bash
-curl http://raspberry-pi-ip:8585/stats
+curl http://device-ip:8585/stats
 ```
 
 Optional query parameters:
 - `block=true` - Block for 1 second to get accurate CPU measurements
 - `cache=false` - Bypass the cache to get fresh data
+- `fields=cpu_usage,memory,uptime` - Retrieve only specific fields
 
 Example response:
 ```json
@@ -178,6 +190,116 @@ Example response:
 }
 ```
 
+### Get Running Processes
+```bash
+curl http://device-ip:8585/processes
+```
+
+Optional query parameters:
+- `sort=cpu` - Sort by resource usage (cpu, memory, name, pid, time)
+- `limit=10` - Maximum number of processes to return
+
+Example response:
+```json
+{
+  "processes": [
+    {
+      "pid": 1234,
+      "name": "python3",
+      "user": "pi",
+      "cpu_percent": 15.2,
+      "memory_percent": 3.5,
+      "running_time": 3600.5
+    },
+    {
+      "pid": 5678,
+      "name": "nginx",
+      "user": "www-data",
+      "cpu_percent": 4.8,
+      "memory_percent": 1.2,
+      "running_time": 86400.2
+    }
+  ],
+  "timestamp": 1646092800.0
+}
+```
+
+### Get Network Interface Details
+```bash
+curl http://device-ip:8585/network/interfaces
+```
+
+Example response:
+```json
+{
+  "interfaces": {
+    "eth0": {
+      "bytes_sent": 12345678,
+      "bytes_recv": 87654321,
+      "packets_sent": 12345,
+      "packets_recv": 54321,
+      "errin": 0,
+      "errout": 0,
+      "dropin": 0,
+      "dropout": 0
+    },
+    "wlan0": {
+      "bytes_sent": 1234567,
+      "bytes_recv": 7654321,
+      "packets_sent": 1234,
+      "packets_recv": 4321,
+      "errin": 0,
+      "errout": 0,
+      "dropin": 0,
+      "dropout": 0,
+      "signal_strength": -58
+    },
+    "active_connections": 12
+  },
+  "timestamp": 1646092800.0
+}
+```
+
+### Get Storage Device Information
+```bash
+curl http://device-ip:8585/storage/devices
+```
+
+Example response:
+```json
+{
+  "devices": [
+    {
+      "device": "/dev/mmcblk0p1",
+      "mountpoint": "/boot",
+      "filesystem": "vfat",
+      "total": 268435456,
+      "used": 67108864,
+      "free": 201326592,
+      "percent": 25.0
+    },
+    {
+      "device": "/dev/mmcblk0p2",
+      "mountpoint": "/",
+      "filesystem": "ext4",
+      "total": 32212254720,
+      "used": 8053063680,
+      "free": 24159191040,
+      "percent": 25.0
+    }
+  ],
+  "disk_io": {
+    "read_count": 12345,
+    "write_count": 67890,
+    "read_bytes": 123456789,
+    "write_bytes": 987654321,
+    "read_time": 12345,
+    "write_time": 67890
+  },
+  "timestamp": 1646092800.0
+}
+```
+
 ## Response Fields Explained
 
 - **CPU Metrics**:
@@ -226,6 +348,42 @@ Example response:
   - `load_avg`: System load averages for 1, 5, and 15 minutes
   - `timestamp`: Unix timestamp when the data was collected
 
+## Cross-Platform Support
+
+The application will automatically detect if it's running on a Raspberry Pi and adjust functionality accordingly:
+
+- On Raspberry Pi: All features are fully available
+- On other Linux systems: Most features work, but Pi-specific metrics are unavailable
+- On Windows/macOS: Basic system metrics only (no Pi-specific hardware info)
+
+## Advanced Usage Examples
+
+### Python Client
+
+```python
+import requests
+
+# Basic stats request
+response = requests.get('http://device-ip:8585/stats')
+data = response.json()
+print(f"CPU Temperature: {data['cpu_temp']}°C")
+print(f"CPU Usage: {data['cpu_usage']}%")
+
+# Get only specific fields
+fields = "cpu_usage,memory,uptime"
+response = requests.get(f'http://device-ip:8585/stats?fields={fields}')
+data = response.json()
+print(f"CPU Usage: {data['cpu_usage']}%")
+print(f"Memory Used: {data['memory']['percent']}%")
+print(f"Uptime: {data['uptime'] / 86400:.1f} days")
+
+# Get top memory-consuming processes
+response = requests.get('http://device-ip:8585/processes?sort=memory&limit=5')
+processes = response.json()['processes']
+for proc in processes:
+    print(f"{proc['name']} (PID {proc['pid']}): {proc['memory_percent']:.1f}% memory")
+```
+
 ## Testing the API
 
 To test if the API is working correctly:
@@ -234,8 +392,8 @@ To test if the API is working correctly:
 # Test on the local machine
 curl http://localhost:8585/health
 
-# Test on a remote Raspberry Pi
-curl http://raspberry-pi-ip:8585/health
+# Test on a remote device
+curl http://device-ip:8585/health
 ```
 
 ## Managing the Service
@@ -309,4 +467,10 @@ Common issues:
 - Ensure the script path in the service file is correct
 - Verify the script has execute permissions
 - Check if port 8585 is already in use by another application
-- Ensure `vcgencmd` and other system tools are available 
+- Ensure `vcgencmd` and other system tools are available (Raspberry Pi only)
+- Check if the `.env` file has proper permissions
+- Verify rate limit settings are appropriate for your use case
+
+## Rate Limiting
+
+By default, the API is protected by rate limiting (60 requests per minute per IP address). If a client exceeds this limit, they'll receive a 429 Too Many Requests response. You can adjust or disable this feature using the environment variables described in the Configuration section.
