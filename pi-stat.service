@@ -22,6 +22,10 @@ Environment="PYTHONUNBUFFERED=1"
 #Environment="PISTAT_HOST=0.0.0.0"
 #Environment="PISTAT_CACHE_SECONDS=2"
 #Environment="PISTAT_DEBUG=False"
+#Environment="PISTAT_LOG_LEVEL=INFO"
+#Environment="PISTAT_RATE_LIMIT_ENABLED=True"
+#Environment="PISTAT_RATE_LIMIT_REQUESTS=60"
+#Environment="PISTAT_RATE_LIMIT_WINDOW=60"
 
 [Install]
-WantedBy=multi-user.target 
+WantedBy=multi-user.target

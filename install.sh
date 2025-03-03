@@ -217,6 +217,10 @@ if [ ! -f "$USER_HOME/.env" ]; then
 # PISTAT_HOST=0.0.0.0       # Host address to bind to (0.0.0.0 = all interfaces)
 # PISTAT_CACHE_SECONDS=2    # How long to cache results in seconds
 # PISTAT_DEBUG=False        # Enable debug mode (True/False)
+# PISTAT_LOG_LEVEL=INFO     # Logging level (INFO, DEBUG, WARNING, ERROR)
+# PISTAT_RATE_LIMIT_ENABLED=True   # Enable request rate limiting
+# PISTAT_RATE_LIMIT_REQUESTS=60    # Maximum requests per time window
+# PISTAT_RATE_LIMIT_WINDOW=60      # Rate limit time window in seconds
 EOF
     echo "Created .env file at $USER_HOME/.env"
 fi
@@ -265,4 +269,4 @@ echo ""
 echo -e "${YELLOW}Backup information:${NC}"
 echo "  All previous files were backed up to: $BACKUP_DIR"
 echo ""
-echo -e "${GREEN}Thank you for installing the Raspberry Pi System Monitor!${NC}" 
+echo -e "${GREEN}Thank you for installing the Raspberry Pi System Monitor!${NC}"

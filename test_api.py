@@ -173,6 +173,7 @@ def test_storage_endpoint(host, port, save_output=False, output_dir="./api_respo
 def run_load_test(host, port, endpoint, requests_count, concurrency):
     """Run a simple load test on an endpoint"""
     print(f"Running load test on {endpoint} with {requests_count} requests ({concurrency} concurrent)...")
+    print("Note: If rate limiting is enabled on the server, this test may be affected.")
     
     url = f"http://{host}:{port}{endpoint}"
     results = {
@@ -181,6 +182,7 @@ def run_load_test(host, port, endpoint, requests_count, concurrency):
         'total_time': 0,
         'min_time': float('inf'),
         'max_time': 0,
+        'rate_limited': 0,  # Counter for rate limited responses
     }
     
     def single_request():
@@ -189,16 +191,20 @@ def run_load_test(host, port, endpoint, requests_count, concurrency):
             response = requests.get(url, timeout=10)
             elapsed = time.time() - start_time
             
+            is_rate_limited = response.status_code == 429
+            
             return {
                 'success': response.status_code == 200,
                 'status_code': response.status_code,
-                'time': elapsed
+                'time': elapsed,
+                'rate_limited': is_rate_limited
             }
         except Exception as e:
             return {
                 'success': False,
                 'status_code': str(e)[:30],
-                'time': time.time() - start_time
+                'time': time.time() - start_time,
+                'rate_limited': False
             }
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
@@ -210,6 +216,9 @@ def run_load_test(host, port, endpoint, requests_count, concurrency):
                 results['success'] += 1
             else:
                 results['failed'] += 1
+                
+            if result.get('rate_limited', False):
+                results['rate_limited'] += 1
                 
             results['total_time'] += result['time']
             results['min_time'] = min(results['min_time'], result['time'])
@@ -223,6 +232,8 @@ def run_load_test(host, port, endpoint, requests_count, concurrency):
     print(f"Concurrency: {concurrency}")
     print(f"Successful: {results['success']} ({results['success']/requests_count*100:.1f}%)")
     print(f"Failed: {results['failed']}")
+    if results['rate_limited'] > 0:
+        print(f"Rate Limited: {results['rate_limited']} ({results['rate_limited']/requests_count*100:.1f}%)")
     print(f"Average Response Time: {results['avg_time']:.4f}s")
     print(f"Min Response Time: {results['min_time']:.4f}s")
     print(f"Max Response Time: {results['max_time']:.4f}s")
@@ -236,6 +247,7 @@ def test_all_endpoints(host, port, table_format, save_output=False, output_dir="
     all_passed = True
     
     print(f"Testing Raspberry Pi System Monitor API at {host}:{port}...\n")
+    print("Note: Tests may be affected by rate limiting if enabled on the server.\n")
     
     # Test root endpoint
     print(f"{'=' * 50}")
@@ -373,6 +385,16 @@ def parse_arguments():
                         type=int,
                         default=10)
     
+    parser.add_argument('--bypass-rate-limit',
+                       help='Add a delay between requests to avoid rate limiting',
+                       action='store_true',
+                       default=False)
+    
+    parser.add_argument('--delay',
+                       help='Delay between requests in seconds (used with --bypass-rate-limit)',
+                       type=float,
+                       default=1.0)
+    
     return parser.parse_args()
 
 def main():
@@ -388,6 +410,10 @@ def main():
         logger.setLevel(logging.DEBUG)
     
     print(f"Target API: {host}:{port}")
+    
+    # Add warning about rate limiting
+    print("Note: The API may have rate limiting enabled. If tests fail unexpectedly,")
+    print("      try using --bypass-rate-limit to add delays between requests.\n")
     
     # Run load test if requested
     if args.load_test:
@@ -426,6 +452,12 @@ def main():
         print(f"\nTest result: {'PASSED' if success else 'FAILED'}")
         print(f"Status code: {status}")
         print(f"Response time: {response_time:.4f}s")
+        
+        # Add check for rate limiting
+        if status == 429:
+            print("\nWARNING: Received a 429 status code (Too Many Requests).")
+            print("The API's rate limiting is restricting your requests.")
+            print("Try again with the --bypass-rate-limit option.")
     
     # Exit with appropriate status code
     return 0 if success else 1
