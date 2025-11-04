@@ -1,20 +1,28 @@
-from flask import Flask, jsonify, render_template_string, request, make_response
-import psutil
-import time
-import subprocess
-import os
-import re
-import json
-import logging
-import platform
-import sys
-from functools import lru_cache
-from dotenv import load_dotenv
-from collections import defaultdict, deque
-import threading
+"""
+Raspberry Pi System Monitor API
+
+A Flask-based API service that provides comprehensive system statistics monitoring
+for Raspberry Pi and other platforms. Features include real-time metrics collection,
+caching, rate limiting, and cross-platform support.
+"""
+
 import gzip
-from typing import Dict, List, Union, Tuple, Optional, Any, Callable
+import logging
+import os
+import platform
+import re
+import subprocess
+import sys
+import threading
+import time
+from collections import defaultdict, deque
 from datetime import datetime
+from functools import lru_cache
+from typing import Dict, List, Optional, Union
+
+from flask import Flask, jsonify, render_template_string, request
+import psutil
+from dotenv import load_dotenv
 
 # Load environment variables from .env file if it exists
 load_dotenv()
@@ -32,14 +40,14 @@ IS_RASPBERRY_PI = False
 PLATFORM_SYSTEM = platform.system()
 if PLATFORM_SYSTEM == "Linux":
     try:
-        with open('/proc/device-tree/model', 'r') as f:
+        with open('/proc/device-tree/model', 'r', encoding='utf-8') as f:
             model = f.read().strip()
             IS_RASPBERRY_PI = "Raspberry Pi" in model
-    except:
+    except (FileNotFoundError, PermissionError, OSError):
         # Not a Raspberry Pi or file doesn't exist
         pass
 
-logger.info(f"Platform detected: {PLATFORM_SYSTEM}, Is Raspberry Pi: {IS_RASPBERRY_PI}")
+logger.info("Platform detected: %s, Is Raspberry Pi: %s", PLATFORM_SYSTEM, IS_RASPBERRY_PI)
 
 # Improved configuration management with validation
 def get_env_int(name: str, default: int, min_val: int = None, max_val: int = None) -> int:
@@ -47,14 +55,16 @@ def get_env_int(name: str, default: int, min_val: int = None, max_val: int = Non
     try:
         value = int(os.environ.get(name, default))
         if min_val is not None and value < min_val:
-            logger.warning(f"{name} value {value} below minimum {min_val}, using minimum")
+            logger.warning("%s value %s below minimum %s, using minimum",
+                          name, value, min_val)
             return min_val
         if max_val is not None and value > max_val:
-            logger.warning(f"{name} value {value} above maximum {max_val}, using maximum")
+            logger.warning("%s value %s above maximum %s, using maximum",
+                          name, value, max_val)
             return max_val
         return value
     except ValueError:
-        logger.warning(f"Invalid {name} value, using default: {default}")
+        logger.warning("Invalid %s value, using default: %s", name, default)
         return default
 
 def get_env_bool(name: str, default: bool) -> bool:
@@ -81,7 +91,7 @@ MIN_SIZE_TO_COMPRESS = get_env_int('PISTAT_MIN_COMPRESS_SIZE', 500, 0, 10000)
 if hasattr(logging, LOG_LEVEL):
     logger.setLevel(getattr(logging, LOG_LEVEL))
 else:
-    logger.warning(f"Invalid log level: {LOG_LEVEL}, using INFO")
+    logger.warning("Invalid log level: %s, using INFO", LOG_LEVEL)
     logger.setLevel(logging.INFO)
 
 # Initialize Flask app
@@ -89,29 +99,34 @@ app = Flask(__name__)
 
 # Improved rate limiting implementation using sliding window with deque
 class RateLimiter:
+    """
+    Rate limiter using sliding window algorithm with deque.
+
+    Tracks request timestamps per client and enforces configurable rate limits.
+    """
     def __init__(self, window_size: int, max_requests: int):
         self.window_size = window_size
         self.max_requests = max_requests
         self.clients: Dict[str, deque] = defaultdict(lambda: deque(maxlen=max_requests))
         self.lock = threading.Lock()
-    
+
     def is_rate_limited(self, client_id: str) -> bool:
         """Check if the client has exceeded the rate limit using sliding window"""
         if not RATE_LIMIT_ENABLED:
             return False
-            
+
         with self.lock:
             now = time.time()
             client_history = self.clients[client_id]
-            
+
             # Remove requests older than the window
             while client_history and now - client_history[0] > self.window_size:
                 client_history.popleft()
-            
+
             # Check if rate limit is exceeded
             if len(client_history) >= self.max_requests:
                 return True
-                
+
             # Record this request
             client_history.append(now)
             return False
@@ -125,17 +140,19 @@ def before_request():
     """Log request info and apply rate limiting"""
     # Apply rate limiting
     ip_address = request.remote_addr
-    
+
     if rate_limiter.is_rate_limited(ip_address):
-        logger.warning(f"Rate limit exceeded for IP: {ip_address}, endpoint: {request.path}")
+        logger.warning("Rate limit exceeded for IP: %s, endpoint: %s", ip_address, request.path)
         return jsonify({
             'error': 'Rate limit exceeded',
             'message': f'Maximum {RATE_LIMIT_REQUESTS} requests per {RATE_LIMIT_WINDOW} seconds'
         }), 429  # 429 Too Many Requests
-    
+
     # Log request details in debug mode
     if DEBUG_MODE:
-        logger.debug(f"Request from {ip_address}: {request.method} {request.path}")
+        logger.debug("Request from %s: %s %s", ip_address, request.method, request.path)
+
+    return None
 
 # Response compression and additional headers
 @app.after_request
@@ -146,22 +163,28 @@ def after_request(response):
     response.headers.add('X-Frame-Options', 'DENY')
     response.headers.add('X-XSS-Protection', '1; mode=block')
     response.headers.add('Cache-Control', f'public, max-age={CACHE_SECONDS}')
-    
+
     # Add response timestamp
     response.headers.add('X-Response-Time', datetime.utcnow().isoformat())
-    
+
     # Apply compression if enabled and response is large enough
-    if (ENABLE_COMPRESSION and 
+    should_compress = (
+        ENABLE_COMPRESSION and
         response.status_code == 200 and
         not response.direct_passthrough and
-        (response.content_length is None or response.content_length > MIN_SIZE_TO_COMPRESS) and
-        'gzip' in request.headers.get('Accept-Encoding', '')):
-        
+        'gzip' in request.headers.get('Accept-Encoding', '')
+    )
+    content_large_enough = (
+        response.content_length is None or
+        response.content_length > MIN_SIZE_TO_COMPRESS
+    )
+
+    if should_compress and content_large_enough:
         compressed_data = gzip.compress(response.data)
         response.data = compressed_data
         response.headers['Content-Encoding'] = 'gzip'
         response.headers['Content-Length'] = len(compressed_data)
-    
+
     return response
 
 # HTML template for the root page
@@ -243,13 +266,13 @@ HTML_TEMPLATE = """
 <body>
     <h1>Raspberry Pi System Monitor API</h1>
     <p>Welcome to the Raspberry Pi System Monitoring API. This service provides real-time system statistics for your Raspberry Pi.</p>
-    
+
     <h2>Available Endpoints</h2>
-    
+
     <div class="endpoint">
         <h3><code>GET /stats</code></h3>
         <p>Returns comprehensive system statistics including CPU temperature, CPU usage, memory usage, disk usage, uptime, and load averages.</p>
-        
+
         <div class="params">
             <h4>Query Parameters:</h4>
             <table>
@@ -279,7 +302,7 @@ HTML_TEMPLATE = """
                 </tr>
             </table>
         </div>
-        
+
         <div class="example">
             <h4>Example Response:</h4>
             <pre>
@@ -354,7 +377,7 @@ HTML_TEMPLATE = """
     <div class="endpoint">
         <h3><code>GET /health</code></h3>
         <p>Simple health check endpoint to verify the service is up and running.</p>
-        
+
         <div class="example">
             <h4>Example Response:</h4>
             <pre>
@@ -369,7 +392,7 @@ HTML_TEMPLATE = """
     <div class="endpoint">
         <h3><code>GET /processes</code></h3>
         <p>Returns information about running processes, sorted by CPU usage by default.</p>
-        
+
         <div class="params">
             <h4>Query Parameters:</h4>
             <table>
@@ -393,7 +416,7 @@ HTML_TEMPLATE = """
                 </tr>
             </table>
         </div>
-        
+
         <div class="example">
             <h4>Example Response:</h4>
             <pre>
@@ -425,7 +448,7 @@ HTML_TEMPLATE = """
     <div class="endpoint">
         <h3><code>GET /network/interfaces</code></h3>
         <p>Provides detailed information about network interfaces and connections.</p>
-        
+
         <div class="example">
             <h4>Example Response:</h4>
             <pre>
@@ -463,7 +486,7 @@ HTML_TEMPLATE = """
     <div class="endpoint">
         <h3><code>GET /storage/devices</code></h3>
         <p>Returns information about storage devices and partitions.</p>
-        
+
         <div class="example">
             <h4>Example Response:</h4>
             <pre>
@@ -501,14 +524,14 @@ HTML_TEMPLATE = """
             </pre>
         </div>
     </div>
-    
+
     <h2>Usage Examples</h2>
-    
+
     <h3>Using curl</h3>
     <pre>curl http://YOUR_PI_IP:8585/stats</pre>
     <pre>curl "http://YOUR_PI_IP:8585/stats?fields=cpu_usage,memory,uptime"</pre>
     <pre>curl "http://YOUR_PI_IP:8585/processes?sort=memory&limit=5"</pre>
-    
+
     <h3>Using Python</h3>
     <pre>
 import requests
@@ -533,7 +556,7 @@ processes = response.json()['processes']
 for proc in processes:
     print(f"{proc['name']} (PID {proc['pid']}): {proc['memory_percent']:.1f}% memory")
     </pre>
-    
+
     <h2>Notes</h2>
     <ul>
         <li>All temperature values are in Celsius</li>
@@ -544,7 +567,7 @@ for proc in processes:
         <li>Timestamp is Unix time (seconds since epoch)</li>
         <li>Rate limiting is enabled by default (60 requests per minute)</li>
     </ul>
-    
+
     <p>For more information, visit the <a href="https://github.com/AwaleSagar/piStat">GitHub repository</a>.</p>
 </body>
 </html>
@@ -552,22 +575,27 @@ for proc in processes:
 
 # Improved caching mechanism
 class StatCache:
+    """
+    Thread-safe cache for system statistics with TTL support.
+
+    Provides get, set, and clear operations with automatic expiration.
+    """
     def __init__(self, ttl_seconds: int):
         self.cache = {}
         self.ttl = ttl_seconds
         self.lock = threading.Lock()
-    
+
     def get(self, key: str, fields: List[str] = None):
         """Get cached data, optionally filtered by fields"""
         with self.lock:
             if key not in self.cache:
                 return None
-                
+
             data, timestamp = self.cache[key]
-            
+
             if time.time() - timestamp > self.ttl:
                 return None
-                
+
             if fields:
                 filtered_data = {}
                 for field in fields:
@@ -575,14 +603,14 @@ class StatCache:
                     if field in data:
                         filtered_data[field] = data[field]
                 return filtered_data
-            
+
             return data
-    
+
     def set(self, key: str, data: Dict):
         """Store data in cache with current timestamp"""
         with self.lock:
             self.cache[key] = (data, time.time())
-            
+
     def clear(self):
         """Clear all cached data"""
         with self.lock:
@@ -591,16 +619,16 @@ class StatCache:
 # Initialize cache with configured TTL
 stats_cache = StatCache(CACHE_SECONDS)
 
-def run_command(command: Union[str, List[str]], args: List[str] = None, 
+def run_command(command: Union[str, List[str]], args: List[str] = None,
                 timeout: int = 5) -> Optional[str]:
     """
     Execute a shell command and return its output with timeout.
-    
+
     Args:
         command: The command to execute (string or list)
         args: List of arguments for the command
         timeout: Maximum execution time in seconds
-    
+
     Returns:
         Command output or None if execution failed
     """
@@ -611,32 +639,34 @@ def run_command(command: Union[str, List[str]], args: List[str] = None,
                 cmd.extend(args)
             # Safer execution without shell=True
             result = subprocess.run(
-                cmd, 
-                shell=False, 
-                check=True, 
-                text=True, 
+                cmd,
+                shell=False,
+                check=True,
+                text=True,
                 capture_output=True,
                 timeout=timeout
             )
         else:
             # Some commands might still need shell=True, but we're careful about inputs
             result = subprocess.run(
-                command, 
-                shell=True, 
-                check=True, 
-                text=True, 
+                command,
+                shell=True,
+                check=True,
+                text=True,
                 capture_output=True,
                 timeout=timeout
             )
         return result.stdout.strip()
     except subprocess.TimeoutExpired:
-        logger.warning(f"Command timed out after {timeout}s: {command} {args if args else ''}")
+        logger.warning("Command timed out after %ss: %s %s", timeout, command, args if args else '')
         return None
     except subprocess.CalledProcessError as e:
-        logger.warning(f"Command failed: {command} {args if args else ''}, return code: {e.returncode}")
+        args_str = args if args else ''
+        logger.warning("Command failed: %s %s, return code: %s",
+                      command, args_str, e.returncode)
         return None
     except Exception as e:
-        logger.error(f"Error executing command '{command}': {str(e)}")
+        logger.error("Error executing command '%s': %s", command, str(e))
         return None
 
 # Apply LRU cache to expensive operations that don't change often
@@ -650,16 +680,16 @@ def get_hardware_info_cached() -> Dict:
 def get_gpu_info():
     """
     Get GPU information from vcgencmd.
-    
+
     Returns:
         dict: Dictionary containing GPU metrics or empty dict if unavailable
     """
     gpu_info = {}
-    
+
     if not IS_RASPBERRY_PI:
         logger.debug("GPU info not available - not running on Raspberry Pi")
         return gpu_info
-    
+
     try:
         # GPU temperature
         gpu_temp = run_command("vcgencmd", ["measure_temp"])
@@ -667,14 +697,14 @@ def get_gpu_info():
             match = re.search(r'temp=(\d+\.\d+)', gpu_temp)
             if match:
                 gpu_info['temperature'] = float(match.group(1))
-        
+
         # GPU memory
         gpu_mem = run_command("vcgencmd", ["get_mem", "gpu"])
         if gpu_mem:
             match = re.search(r'(\d+)M', gpu_mem)
             if match:
                 gpu_info['memory'] = int(match.group(1)) * 1024 * 1024  # Convert MB to bytes
-        
+
         # V3D utilization
         v3d_freq = run_command("vcgencmd", ["measure_clock", "v3d"])
         if v3d_freq:
@@ -682,23 +712,23 @@ def get_gpu_info():
             if match:
                 gpu_info['v3d_clock'] = int(match.group(1))
     except Exception as e:
-        logger.error(f"Error getting GPU info: {str(e)}")
-    
+        logger.error("Error getting GPU info: %s", str(e))
+
     return gpu_info
 
 def get_power_info():
     """
     Get power information from vcgencmd.
-    
+
     Returns:
         dict: Dictionary containing power metrics or empty dict if unavailable
     """
     power_info = {}
-    
+
     if not IS_RASPBERRY_PI:
         logger.debug("Power info not available - not running on Raspberry Pi")
         return power_info
-    
+
     try:
         # Current voltage
         voltage = run_command("vcgencmd", ["measure_volts", "core"])
@@ -706,7 +736,7 @@ def get_power_info():
             match = re.search(r'(\d+\.\d+)V', voltage)
             if match:
                 power_info['core_voltage'] = float(match.group(1))
-        
+
         # Throttling status
         throttled = run_command("vcgencmd", ["get_throttled"])
         if throttled:
@@ -717,23 +747,23 @@ def get_power_info():
                 power_info['freq_capped'] = bool(throttle_value & 0x2)
                 power_info['throttled'] = bool(throttle_value & 0x4)
     except Exception as e:
-        logger.error(f"Error getting power info: {str(e)}")
-    
+        logger.error("Error getting power info: %s", str(e))
+
     return power_info
 
 def get_clock_info():
     """
     Get various clock frequencies from vcgencmd.
-    
+
     Returns:
         dict: Dictionary containing clock frequencies or empty dict if unavailable
     """
     clock_info = {}
-    
+
     if not IS_RASPBERRY_PI:
         logger.debug("Clock info not available - not running on Raspberry Pi")
         return clock_info
-    
+
     try:
         # ARM clock
         arm_freq = run_command("vcgencmd", ["measure_clock", "arm"])
@@ -741,14 +771,14 @@ def get_clock_info():
             match = re.search(r'=(\d+)', arm_freq)
             if match:
                 clock_info['arm'] = int(match.group(1))
-        
+
         # Core clock
         core_freq = run_command("vcgencmd", ["measure_clock", "core"])
         if core_freq:
             match = re.search(r'=(\d+)', core_freq)
             if match:
                 clock_info['core'] = int(match.group(1))
-        
+
         # SDRAM clock
         sdram_freq = run_command("vcgencmd", ["measure_clock", "sdram"])
         if sdram_freq:
@@ -756,26 +786,26 @@ def get_clock_info():
             if match:
                 clock_info['sdram'] = int(match.group(1))
     except Exception as e:
-        logger.error(f"Error getting clock info: {str(e)}")
-    
+        logger.error("Error getting clock info: %s", str(e))
+
     return clock_info
 
 def get_network_details():
     """
     Get detailed network interface information.
-    
+
     Returns:
         dict: Dictionary containing network interface statistics
     """
     network_info = {}
-    
+
     try:
         # Get all network interfaces
         for interface, stats in psutil.net_io_counters(pernic=True).items():
             # Skip loopback
             if interface == 'lo':
                 continue
-                
+
             network_info[interface] = {
                 'bytes_sent': stats.bytes_sent,
                 'bytes_recv': stats.bytes_recv,
@@ -786,7 +816,7 @@ def get_network_details():
                 'dropin': stats.dropin,
                 'dropout': stats.dropout
             }
-            
+
             # Add WiFi signal info if available and it's a wireless interface
             if interface.startswith('wlan'):
                 try:
@@ -796,55 +826,55 @@ def get_network_details():
                         if match:
                             network_info[interface]['signal_strength'] = int(match.group(1))
                 except Exception as e:
-                    logger.warning(f"Could not get WiFi signal for {interface}: {str(e)}")
-        
+                    logger.warning("Could not get WiFi signal for %s: %s", interface, str(e))
+
         # Count active connections
         connections = len(psutil.net_connections())
         network_info['active_connections'] = connections
     except Exception as e:
-        logger.error(f"Error getting network details: {str(e)}")
+        logger.error("Error getting network details: %s", str(e))
         return {}
-    
+
     return network_info
 
 def get_hardware_info():
     """
     Get Raspberry Pi hardware information.
-    
+
     Returns:
         dict: Dictionary containing hardware information
     """
     hardware_info = {}
-    
+
     try:
         # Model information
         model_info = run_command("cat /proc/device-tree/model")
         if model_info:
             hardware_info['model'] = model_info
-        
+
         # Serial number
         serial = run_command("cat /proc/cpuinfo | grep Serial | cut -d ' ' -f 2")
         if serial:
             hardware_info['serial'] = serial
-        
+
         # Firmware version
         firmware = run_command("vcgencmd", ["version"])
         if firmware:
             hardware_info['firmware'] = firmware
-        
+
         # Check for connected devices
         usb_devices = run_command("lsusb")
         if usb_devices:
             hardware_info['usb_devices'] = len(usb_devices.splitlines())
     except Exception as e:
-        logger.error(f"Error getting hardware info: {str(e)}")
-    
+        logger.error("Error getting hardware info: %s", str(e))
+
     return hardware_info
 
 def get_swap_info():
     """
     Get swap memory usage.
-    
+
     Returns:
         dict: Dictionary containing swap memory statistics
     """
@@ -857,13 +887,13 @@ def get_swap_info():
             'percent': swap.percent
         }
     except Exception as e:
-        logger.error(f"Error getting swap info: {str(e)}")
+        logger.error("Error getting swap info: %s", str(e))
         return {}
 
 def get_disk_io():
     """
     Get disk I/O statistics.
-    
+
     Returns:
         dict: Dictionary containing disk I/O statistics
     """
@@ -879,17 +909,17 @@ def get_disk_io():
                 'write_time': disk_io.write_time
             }
     except Exception as e:
-        logger.error(f"Error getting disk I/O info: {str(e)}")
-    
+        logger.error("Error getting disk I/O info: %s", str(e))
+
     return {}
 
 def get_cpu_usage(block=False):
     """
     Get CPU usage percentage.
-    
+
     Args:
         block (bool): Whether to block for 1 second for more accurate readings
-    
+
     Returns:
         float: CPU usage percentage
         list: Per-CPU usage percentages
@@ -903,14 +933,14 @@ def get_cpu_usage(block=False):
             per_cpu_usage = psutil.cpu_percent(interval=0, percpu=True)
         return cpu_usage, per_cpu_usage
     except Exception as e:
-        logger.error(f"Error getting CPU usage: {str(e)}")
+        logger.error("Error getting CPU usage: %s", str(e))
         return 0.0, []
 
 @app.route('/', methods=['GET'])
 def index():
     """
     Root endpoint that displays a simple webpage explaining the API usage.
-    
+
     Returns:
         str: HTML documentation page
     """
@@ -920,14 +950,14 @@ def index():
 def health_check():
     """
     Simple health check endpoint.
-    
+
     Returns:
         JSON: Health status and uptime
     """
     try:
         uptime = time.time() - psutil.boot_time()
         memory = psutil.virtual_memory()
-        
+
         health_data = {
             'status': 'healthy',
             'uptime': uptime,
@@ -935,10 +965,10 @@ def health_check():
             'timestamp': time.time(),
             'version': '1.0.0'  # Add version info
         }
-        
+
         return jsonify(health_data)
     except Exception as e:
-        logger.error(f"Health check failed: {str(e)}")
+        logger.error("Health check failed: %s", str(e))
         return jsonify({
             'status': 'unhealthy',
             'error': str(e),
@@ -950,12 +980,12 @@ def get_stats():
     """
     Endpoint to retrieve real-time Raspberry Pi system statistics.
     Returns a JSON object with CPU, memory, disk, and other system metrics.
-    
+
     Query Parameters:
         block (bool): Whether to block for CPU measurements (default: false)
         cache (bool): Whether to use cached results if available (default: true)
         fields (str): Comma-separated list of fields to include (default: all)
-    
+
     Returns:
         JSON: System statistics
     """
@@ -964,7 +994,7 @@ def get_stats():
     use_cache = request.args.get('cache', 'true').lower() == 'true'
     fields = request.args.get('fields')
     fields_list = fields.split(',') if fields else None
-    
+
     # Check cache first
     if use_cache and fields_list:
         cached_stats = stats_cache.get('system_stats', fields_list)
@@ -974,10 +1004,10 @@ def get_stats():
         cached_stats = stats_cache.get('system_stats')
         if cached_stats:
             return jsonify(cached_stats)
-    
+
     try:
         stats = {}
-        
+
         # Get CPU temperature
         try:
             temps = psutil.sensors_temperatures()
@@ -986,7 +1016,7 @@ def get_stats():
                 cpu_temp = temps['cpu_thermal'][0].current  # Temperature in Celsius
             stats['cpu_temp'] = cpu_temp
         except Exception as e:
-            logger.debug(f"Failed to get CPU temperature: {str(e)}")
+            logger.debug("Failed to get CPU temperature: %s", str(e))
             stats['cpu_temp'] = None
 
         # Get CPU frequency (in MHz)
@@ -995,7 +1025,7 @@ def get_stats():
             cpu_freq = cpu_freq_info.current if cpu_freq_info else None
             stats['cpu_freq'] = cpu_freq
         except Exception as e:
-            logger.debug(f"Failed to get CPU frequency: {str(e)}")
+            logger.debug("Failed to get CPU frequency: %s", str(e))
             stats['cpu_freq'] = None
 
         # Get CPU usage percentage
@@ -1004,7 +1034,7 @@ def get_stats():
             stats['cpu_usage'] = cpu_usage
             stats['per_cpu_usage'] = per_cpu_usage
         except Exception as e:
-            logger.warning(f"Failed to get CPU usage: {str(e)}")
+            logger.warning("Failed to get CPU usage: %s", str(e))
             stats['cpu_usage'] = None
             stats['per_cpu_usage'] = []
 
@@ -1018,7 +1048,7 @@ def get_stats():
                 'percent': memory.percent   # Percentage used
             }
         except Exception as e:
-            logger.warning(f"Failed to get memory info: {str(e)}")
+            logger.warning("Failed to get memory info: %s", str(e))
             stats['memory'] = {}
 
         # Add other metrics
@@ -1028,7 +1058,7 @@ def get_stats():
         stats['uptime'] = get_system_uptime()
         stats['load_avg'] = get_load_averages()
         stats['timestamp'] = time.time()
-        
+
         # Add additional metrics that might be expensive - consider making them optional
         stats['gpu'] = get_gpu_info()
         stats['power'] = get_power_info()
@@ -1038,7 +1068,7 @@ def get_stats():
 
         # Update cache
         stats_cache.set('system_stats', stats)
-        
+
         # Filter by requested fields if specified
         if fields_list:
             filtered_stats = {}
@@ -1047,12 +1077,12 @@ def get_stats():
                 if field in stats:
                     filtered_stats[field] = stats[field]
             return jsonify(filtered_stats)
-        
+
         # Return all stats as JSON
         return jsonify(stats)
-    
+
     except Exception as e:
-        logger.error(f"Error collecting system stats: {str(e)}")
+        logger.error("Error collecting system stats: %s", str(e))
         return jsonify({
             'error': 'Failed to collect system statistics',
             'details': str(e),
@@ -1071,7 +1101,7 @@ def get_disk_usage() -> Dict:
             'percent': disk.percent
         }
     except Exception as e:
-        logger.warning(f"Failed to get disk usage: {str(e)}")
+        logger.warning("Failed to get disk usage: %s", str(e))
         return {}
 
 def get_system_uptime() -> float:
@@ -1079,7 +1109,7 @@ def get_system_uptime() -> float:
     try:
         return time.time() - psutil.boot_time()
     except Exception as e:
-        logger.warning(f"Failed to get uptime: {str(e)}")
+        logger.warning("Failed to get uptime: %s", str(e))
         return 0
 
 def get_load_averages() -> List[float]:
@@ -1087,33 +1117,34 @@ def get_load_averages() -> List[float]:
     try:
         return list(psutil.getloadavg())
     except Exception as e:
-        logger.warning(f"Failed to get load averages: {str(e)}")
+        logger.warning("Failed to get load averages: %s", str(e))
         return []
 
 @app.route('/processes', methods=['GET'])
 def get_processes():
     """
     Endpoint to retrieve information about running processes.
-    
+
     Query Parameters:
         sort (str): Sort processes by this field (default: 'cpu')
         limit (int): Number of processes to return (default: 10)
-        
+
     Returns:
         JSON: List of processes with details
     """
     try:
         # Parse query parameters
         sort_by = request.args.get('sort', 'cpu').lower()
-        limit = min(int(request.args.get('limit', 10)), 100)  # Cap at 100 to prevent excessive response sizes
-        
+        # Cap at 100 to prevent excessive response sizes
+        limit = min(int(request.args.get('limit', 10)), 100)
+
         processes_list = []
         valid_sort_fields = ['cpu', 'memory', 'name', 'pid', 'time']
-        
+
         # Default to CPU if invalid sort field
         if sort_by not in valid_sort_fields:
             sort_by = 'cpu'
-            
+
         sort_mapping = {
             'cpu': lambda p: p['cpu_percent'],
             'memory': lambda p: p['memory_percent'],
@@ -1121,9 +1152,11 @@ def get_processes():
             'pid': lambda p: p['pid'],
             'time': lambda p: p['running_time']
         }
-        
+
         # Get all processes
-        for proc in psutil.process_iter(['pid', 'name', 'username', 'cpu_percent', 'memory_percent', 'create_time']):
+        proc_attrs = ['pid', 'name', 'username', 'cpu_percent',
+                     'memory_percent', 'create_time']
+        for proc in psutil.process_iter(proc_attrs):
             try:
                 process_info = proc.info
                 # Calculate running time
@@ -1138,21 +1171,21 @@ def get_processes():
                 })
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 pass
-        
+
         # Sort processes by the selected field (descending for cpu and memory)
         reverse_sort = sort_by in ['cpu', 'memory', 'time']
         processes_list.sort(key=sort_mapping[sort_by], reverse=reverse_sort)
-        
+
         # Limit the number of results
         processes_list = processes_list[:limit]
-        
+
         return jsonify({
             'processes': processes_list,
             'timestamp': time.time()
         })
-        
+
     except Exception as e:
-        logger.error(f"Error getting process information: {str(e)}")
+        logger.error("Error getting process information: %s", str(e))
         return jsonify({
             'error': 'Failed to get process information',
             'details': str(e)
@@ -1162,7 +1195,7 @@ def get_processes():
 def get_network_interfaces():
     """
     Endpoint to retrieve detailed information about network interfaces.
-    
+
     Returns:
         JSON: Network interface details
     """
@@ -1172,7 +1205,7 @@ def get_network_interfaces():
             'timestamp': time.time()
         })
     except Exception as e:
-        logger.error(f"Error getting network interface information: {str(e)}")
+        logger.error("Error getting network interface information: %s", str(e))
         return jsonify({
             'error': 'Failed to get network interface information',
             'details': str(e)
@@ -1182,13 +1215,13 @@ def get_network_interfaces():
 def get_storage_devices():
     """
     Endpoint to retrieve information about storage devices.
-    
+
     Returns:
         JSON: Storage device information
     """
     try:
         storage_info = []
-        
+
         # Get all disk partitions
         for partition in psutil.disk_partitions():
             try:
@@ -1210,16 +1243,16 @@ def get_storage_devices():
                     'filesystem': partition.fstype,
                     'access_error': True
                 })
-        
+
         return jsonify({
             'devices': storage_info,
             'disk_io': get_disk_io(),
             'timestamp': time.time()
         })
     except Exception as e:
-        logger.error(f"Error getting storage device information: {str(e)}")
+        logger.error("Error getting storage device information: %s", str(e))
         return jsonify({
-            'error': 'Failed to get storage device information', 
+            'error': 'Failed to get storage device information',
             'details': str(e)
         }), 500
 
@@ -1228,11 +1261,11 @@ def get_storage_devices():
 def get_metric_history():
     """
     Endpoint to retrieve historical metrics.
-    
+
     Query Parameters:
         metric (str): The metric to return history for (cpu, memory, temp)
         duration (int): Duration in minutes to look back (default: 10)
-        
+
     Returns:
         JSON: Historical metric data
     """
@@ -1248,7 +1281,7 @@ def get_metric_history():
 def get_system_config():
     """
     Endpoint to retrieve system configuration information.
-    
+
     Returns:
         JSON: System configuration details
     """
@@ -1277,16 +1310,16 @@ def get_system_config():
         }
         return jsonify(config_info)
     except Exception as e:
-        logger.error(f"Error getting system config: {str(e)}")
+        logger.error("Error getting system config: %s", str(e))
         return jsonify({
             'error': 'Failed to get system configuration',
             'details': str(e)
         }), 500
 
 # Graceful shutdown handler
-def graceful_shutdown(signal_number, frame):
+def graceful_shutdown(signal_number, _frame):
     """Handle graceful shutdown on SIGTERM/SIGINT"""
-    logger.info(f"Received signal {signal_number}, shutting down...")
+    logger.info("Received signal %s, shutting down...", signal_number)
     # Clean up resources
     stats_cache.clear()
     sys.exit(0)
@@ -1297,6 +1330,6 @@ if __name__ == '__main__':
     import signal
     signal.signal(signal.SIGTERM, graceful_shutdown)
     signal.signal(signal.SIGINT, graceful_shutdown)
-    
-    logger.info(f"Starting Pi System Monitor on {HOST}:{PORT}")
+
+    logger.info("Starting Pi System Monitor on %s:%s", HOST, PORT)
     app.run(host=HOST, port=PORT, debug=DEBUG_MODE)
