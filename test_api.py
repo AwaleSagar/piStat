@@ -91,15 +91,17 @@ def test_api_endpoint(endpoint, host, port, expect_json=True, save_output=False,
                     print("\nError: Expected JSON response but received non-JSON data.")
                     print("Response preview:", response.text[:100] + "...")
                     return False, "JSON Decode Error", time.time() - start_time
-            print("\nReceived HTML response (first 100 characters):")
-            print(response.text[:100] + "...")
+            else:
+                print("\nReceived HTML response (first 100 characters):")
+                print(response.text[:100] + "...")
 
-            # Save response to file if requested
-            if save_output:
-                save_response_to_file(endpoint, response.text, output_dir)
+                # Save response to file if requested
+                if save_output:
+                    save_response_to_file(endpoint, response.text, output_dir)
 
             print(f"\nEndpoint {endpoint} is working correctly!")
             return True, response.status_code, response_time
+
         print(f"\nError: API returned status code {response.status_code}")
         print(response.text)
         return False, response.status_code, response_time
@@ -115,6 +117,7 @@ def test_api_endpoint(endpoint, host, port, expect_json=True, save_output=False,
             print("\nError: Expected JSON response but received non-JSON data.")
             print("Response preview:", response.text[:100] + "...")
             return False, "JSON Decode Error", time.time() - start_time
+
         print("\nReceived non-JSON response as expected.")
         return True, response.status_code, time.time() - start_time
     except Exception as e:
