@@ -11,6 +11,7 @@ import logging
 import os
 import platform
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -1327,7 +1328,6 @@ def graceful_shutdown(signal_number, _frame):
 # Run the Flask app
 if __name__ == '__main__':
     # Register signal handlers for graceful shutdown
-    import signal
     signal.signal(signal.SIGTERM, graceful_shutdown)
     signal.signal(signal.SIGINT, graceful_shutdown)
 
